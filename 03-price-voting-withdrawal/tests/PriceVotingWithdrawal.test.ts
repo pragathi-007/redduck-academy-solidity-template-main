@@ -217,24 +217,24 @@ describe("PriceVotingWithdrawal", function () {
   });
 
   it("rejects winning price when there are no remaining votes", async function () {
-    const { voting, alice } =
-      await networkHelpers.loadFixture(deployFixture);
+    const { voting, alice } = await networkHelpers.loadFixture(deployFixture);
 
-    await voting.write.vote(
-      [100n, parseEther("50")],
-      { account: alice.account }
-    );
+    await voting.write.vote([100n, parseEther("50")], {
+      account: alice.account,
+    });
 
-    await voting.write.withdraw(
-      [100n, parseEther("50")],
-      { account: alice.account }
-    );
+    await voting.write.withdraw([100n, parseEther("50")], {
+      account: alice.account,
+    });
 
     await networkHelpers.time.increase(ONE_DAY + 1);
 
     await assert.rejects(async () => {
       await voting.read.winningPrice();
-      it("returns the correct winning price for a vote-only sequence", async function () {
+    });
+  });
+
+  it("returns the correct winning price for a vote-only sequence", async function () {
     const { voting, alice, bob, carol } = await networkHelpers.loadFixture(deployFixture);
 
     await voting.write.vote([100n, parseEther("40")], { account: alice.account });
@@ -256,7 +256,4 @@ describe("PriceVotingWithdrawal", function () {
 
     assert.equal(await voting.read.winningPrice(), 200n);
   });
-    });
-  });
-
 });
