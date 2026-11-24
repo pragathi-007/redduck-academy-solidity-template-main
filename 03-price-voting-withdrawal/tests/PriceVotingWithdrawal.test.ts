@@ -234,6 +234,28 @@ describe("PriceVotingWithdrawal", function () {
 
     await assert.rejects(async () => {
       await voting.read.winningPrice();
+      it("returns the correct winning price for a vote-only sequence", async function () {
+    const { voting, alice, bob, carol } = await networkHelpers.loadFixture(deployFixture);
+
+    await voting.write.vote([100n, parseEther("40")], { account: alice.account });
+    await voting.write.vote([250n, parseEther("90")], { account: bob.account });
+    await voting.write.vote([100n, parseEther("30")], { account: carol.account });
+
+    await networkHelpers.time.increase(ONE_DAY + 1);
+
+    assert.equal(await voting.read.winningPrice(), 250n);
+  });
+
+  it("breaks ties in favor of the higher price", async function () {
+    const { voting, alice, bob } = await networkHelpers.loadFixture(deployFixture);
+
+    await voting.write.vote([100n, parseEther("50")], { account: alice.account });
+    await voting.write.vote([200n, parseEther("50")], { account: bob.account });
+
+    await networkHelpers.time.increase(ONE_DAY + 1);
+
+    assert.equal(await voting.read.winningPrice(), 200n);
+  });
     });
   });
 

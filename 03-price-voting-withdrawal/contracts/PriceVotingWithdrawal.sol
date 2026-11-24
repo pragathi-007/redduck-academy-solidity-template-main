@@ -1,26 +1,27 @@
-
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/// @title PriceVotingWithdrawal
+/// @notice Allows token holders to vote on a token price and withdraw their locked stake at any time.
+/// @dev Maintains an on-chain binary max-heap of active voted prices so `winningPrice()` executes in O(1)
+///      without unbounded iteration over voter-controlled prices.
+///      Tie-breaking rule: if multiple prices share the exact same highest total weight, the higher numeric
+///      price wins (`priceA > priceB`).
 contract PriceVotingWithdrawal {
-
     IERC20 public immutable token;
     uint256 public immutable votingEnd;
 
-    // Total tokens locked for each price
+    // Total tokens currently locked for each price
     mapping(uint256 => uint256) public totalWeightAtPrice;
 
     // Tokens locked by each voter for each price
-    mapping(address => mapping(uint256 => uint256))
-        public lockedBalance;
+    mapping(address => mapping(uint256 => uint256)) public lockedBalance;
 
-    // Store all prices that have received votes
-    uint256[] private prices;
-
-    // Check whether a price is already registered
-    mapping(uint256 => bool) private priceExists;
+    // Max-heap of prices with non-zero weight (0-indexed array) and 1-based position lookup (0 = absent)
+    uint256[] private _priceHeap;
+    mapping(uint256 => uint256) private _heapPos;
 
     error VotingEnded();
     error VotingNotEnded();
@@ -30,17 +31,8 @@ contract PriceVotingWithdrawal {
     error TokenTransferFailed();
     error InvalidVotingEnd();
 
-    event VoteCast(
-        address indexed voter,
-        uint256 indexed price,
-        uint256 amount
-    );
-
-    event TokensWithdrawn(
-        address indexed voter,
-        uint256 indexed price,
-        uint256 amount
-    );
+    event VoteCast(address indexed voter, uint256 indexed price, uint256 amount);
+    event TokensWithdrawn(address indexed voter, uint256 indexed price, uint256 amount);
 
     constructor(IERC20 _token, uint256 _votingEnd) {
         if (_votingEnd <= block.timestamp) {
@@ -51,24 +43,18 @@ contract PriceVotingWithdrawal {
         votingEnd = _votingEnd;
     }
 
-    // Vote by locking tokens behind a price
+    /// @notice Vote by locking `amount` tokens behind `price`.
     function vote(uint256 price, uint256 amount) external {
-
         if (block.timestamp >= votingEnd) {
             revert VotingEnded();
         }
-
         if (amount == 0) {
             revert InvalidAmount();
         }
 
-        if (!priceExists[price]) {
-            priceExists[price] = true;
-            prices.push(price);
-        }
-
         lockedBalance[msg.sender][price] += amount;
         totalWeightAtPrice[price] += amount;
+        _onWeightIncreased(price);
 
         if (!token.transferFrom(msg.sender, address(this), amount)) {
             revert TokenTransferFailed();
@@ -77,19 +63,18 @@ contract PriceVotingWithdrawal {
         emit VoteCast(msg.sender, price, amount);
     }
 
-    // Withdraw locked tokens at any time
+    /// @notice Withdraw `amount` previously locked tokens from `price` at any time.
     function withdraw(uint256 price, uint256 amount) external {
-
         if (amount == 0) {
             revert InvalidAmount();
         }
-
         if (lockedBalance[msg.sender][price] < amount) {
             revert InsufficientLockedBalance();
         }
 
         lockedBalance[msg.sender][price] -= amount;
         totalWeightAtPrice[price] -= amount;
+        _onWeightDecreased(price);
 
         if (!token.transfer(msg.sender, amount)) {
             revert TokenTransferFailed();
@@ -98,31 +83,105 @@ contract PriceVotingWithdrawal {
         emit TokensWithdrawn(msg.sender, price, amount);
     }
 
-    // Find the winning price after voting ends
+    /// @notice Returns the winning price after voting ends in O(1) time.
+    /// @dev Tie-breaking rule: among prices tied for the highest `totalWeightAtPrice`, the higher price wins.
     function winningPrice() external view returns (uint256) {
-
         if (block.timestamp < votingEnd) {
             revert VotingNotEnded();
         }
-
-        uint256 highestWeight = 0;
-        uint256 winner = 0;
-
-        for (uint256 i = 0; i < prices.length; i++) {
-
-            uint256 currentPrice = prices[i];
-            uint256 currentWeight = totalWeightAtPrice[currentPrice];
-
-            if (currentWeight > highestWeight) {
-                highestWeight = currentWeight;
-                winner = currentPrice;
-            }
-        }
-
-        if (highestWeight == 0) {
+        if (_priceHeap.length == 0 || totalWeightAtPrice[_priceHeap[0]] == 0) {
             revert NoVotes();
         }
 
-        return winner;
+        return _priceHeap[0];
+    }
+
+    /// @dev Returns true if `priceA` ranks ahead of `priceB` under higher-weight-first,
+    ///      higher-price-breaks-ties ordering.
+    function _ranksAbove(uint256 priceA, uint256 priceB) private view returns (bool) {
+        uint256 weightA = totalWeightAtPrice[priceA];
+        uint256 weightB = totalWeightAtPrice[priceB];
+        if (weightA != weightB) {
+            return weightA > weightB;
+        }
+        return priceA > priceB;
+    }
+
+    function _onWeightIncreased(uint256 price) private {
+        uint256 pos = _heapPos[price];
+        if (pos == 0) {
+            _priceHeap.push(price);
+            uint256 idx = _priceHeap.length - 1;
+            _heapPos[price] = idx + 1;
+            _siftUp(idx);
+        } else {
+            _siftUp(pos - 1);
+        }
+    }
+
+    function _onWeightDecreased(uint256 price) private {
+        uint256 pos = _heapPos[price];
+        if (pos == 0) return;
+
+        uint256 idx = pos - 1;
+        if (totalWeightAtPrice[price] == 0) {
+            uint256 lastIdx = _priceHeap.length - 1;
+            if (idx != lastIdx) {
+                uint256 movedPrice = _priceHeap[lastIdx];
+                _priceHeap[idx] = movedPrice;
+                _heapPos[movedPrice] = idx + 1;
+                _priceHeap.pop();
+                delete _heapPos[price];
+                _siftUp(idx);
+                _siftDown(idx);
+            } else {
+                _priceHeap.pop();
+                delete _heapPos[price];
+            }
+        } else {
+            _siftDown(idx);
+        }
+    }
+
+    function _siftUp(uint256 idx) private {
+        while (idx > 0) {
+            uint256 parentIdx = (idx - 1) / 2;
+            uint256 currentPrice = _priceHeap[idx];
+            uint256 parentPrice = _priceHeap[parentIdx];
+            if (!_ranksAbove(currentPrice, parentPrice)) {
+                break;
+            }
+            _priceHeap[idx] = parentPrice;
+            _heapPos[parentPrice] = idx + 1;
+            _priceHeap[parentIdx] = currentPrice;
+            _heapPos[currentPrice] = parentIdx + 1;
+            idx = parentIdx;
+        }
+    }
+
+    function _siftDown(uint256 idx) private {
+        uint256 len = _priceHeap.length;
+        while (true) {
+            uint256 left = 2 * idx + 1;
+            if (left >= len) break;
+
+            uint256 best = idx;
+            if (_ranksAbove(_priceHeap[left], _priceHeap[best])) {
+                best = left;
+            }
+            uint256 right = left + 1;
+            if (right < len && _ranksAbove(_priceHeap[right], _priceHeap[best])) {
+                best = right;
+            }
+            if (best == idx) break;
+
+            uint256 currentPrice = _priceHeap[idx];
+            uint256 bestPrice = _priceHeap[best];
+            _priceHeap[idx] = bestPrice;
+            _heapPos[bestPrice] = idx + 1;
+            _priceHeap[best] = currentPrice;
+            _heapPos[currentPrice] = best + 1;
+            idx = best;
+        }
     }
 }
