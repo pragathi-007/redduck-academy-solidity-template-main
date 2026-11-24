@@ -55,33 +55,37 @@ describe("Pair (pull-based AMM)", function () {
     assert.ok(r0After * r1After > kBefore, "k must not decrease across a swap");
   });
 
-  it("locks MINIMUM_LIQUIDITY on first deposit and mints proportional LP on balanced later deposits", async function () {
+  it("locks MINIMUM_LIQUIDITY on first deposit and mints proportional LP on balanced and lopsided deposits", async function () {
     const { pair, deployer, alice } = await deployFixture();
     const deadAddress = "0x000000000000000000000000000000000000dEaD";
 
     const minLiquidity = (await pair.read.MINIMUM_LIQUIDITY()) as bigint;
     assert.ok(minLiquidity > 0n);
 
+    // 1. Initial deposit (100 : 400 -> sqrt = 200 LP)
     await pair.write.addLiquidity([parseEther("100"), parseEther("400")]);
+    assert.equal(await pair.read.totalSupply(), parseEther("200"));
+    assert.equal(await pair.read.balanceOf([deadAddress]), minLiquidity);
+    assert.equal(
+      await pair.read.balanceOf([deployer.account.address]),
+      parseEther("200") - minLiquidity,
+    );
 
-    const deployerLpAfterFirst = (await pair.read.balanceOf([deployer.account.address])) as bigint;
-    const totalSupplyAfterFirst = (await pair.read.totalSupply()) as bigint;
-    const lockedLp = (await pair.read.balanceOf([deadAddress])) as bigint;
-
-    assert.equal(totalSupplyAfterFirst, parseEther("200"));
-    assert.equal(lockedLp, minLiquidity);
-    assert.equal(deployerLpAfterFirst, parseEther("200") - minLiquidity);
-
-    // Balanced 1:4 follow-up deposit doubles the pool reserves and mints 200 LP
+    // 2. Balanced follow-up deposit (100 : 400 -> +200 LP)
     await pair.write.addLiquidity([parseEther("100"), parseEther("400")], {
       account: alice.account,
     });
-
-    const aliceLp = (await pair.read.balanceOf([alice.account.address])) as bigint;
-    assert.equal(aliceLp, parseEther("200"));
+    assert.equal(await pair.read.balanceOf([alice.account.address]), parseEther("200"));
     assert.equal(await pair.read.totalSupply(), parseEther("400"));
-    assert.equal(await pair.read.reserve0(), parseEther("200"));
-    assert.equal(await pair.read.reserve1(), parseEther("800"));
+
+    // 3. Lopsided follow-up deposit (100 : 1000 -> min(200, 500) = +200 LP)
+    await pair.write.addLiquidity([parseEther("100"), parseEther("1000")], {
+      account: alice.account,
+    });
+    assert.equal(await pair.read.balanceOf([alice.account.address]), parseEther("400"));
+    assert.equal(await pair.read.totalSupply(), parseEther("600"));
+    assert.equal(await pair.read.reserve0(), parseEther("300"));
+    assert.equal(await pair.read.reserve1(), parseEther("1800"));
   });
 
   it("swaps in the reverse tokenB-to-tokenA direction with 0.3% fee", async function () {
@@ -152,7 +156,8 @@ describe("Pair (pull-based AMM)", function () {
       pair.read.getAmountOut([parseEther("10"), parseEther("100"), 0n]),
       /InsufficientLiquidity/,
     );
-await assert.rejects(
+
+    await assert.rejects(
       pair.write.addLiquidity([0n, parseEther("100")]),
       /InsufficientAmount/,
     );
@@ -164,6 +169,7 @@ await assert.rejects(
     await assert.rejects(pair.write.removeLiquidity([0n]), /InsufficientAmount/);
 
     await pair.write.addLiquidity([parseEther("1000"), parseEther("1000")]);
+
     const fakeToken = await viem.deployContract("Token", ["Fake", "FAKE", parseEther("1000")]);
     await fakeToken.write.transfer([alice.account.address, parseEther("100")]);
     await fakeToken.write.approve([pair.address, parseEther("100")], { account: alice.account });

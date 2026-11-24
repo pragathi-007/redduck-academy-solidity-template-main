@@ -68,7 +68,7 @@ contract Pair is ERC20 {
         _mint(msg.sender, liquidity);
         _syncReserves();
 
-        emit LiquidityAdded(msg.sender, received0, received1, liquidity);
+        emit LiquidityAdded(msg.sender, amount0, amount1, liquidity);
     }
 
     function removeLiquidity(uint256 liquidity) external returns (uint256 amount0, uint256 amount1) {
