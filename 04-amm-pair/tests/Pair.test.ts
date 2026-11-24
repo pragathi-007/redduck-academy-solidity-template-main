@@ -131,6 +131,7 @@ describe("Pair (pull-based AMM)", function () {
 
     assert.equal(aAfter - aBefore, expectedA);
     assert.equal(bAfter - bBefore, expectedB);
+    assert.equal(await pair.read.totalSupply(), totalSupplyBefore - halfLp);
     assert.equal(await pair.read.balanceOf([deployer.account.address]), deployerLpBefore - halfLp);
     assert.equal(await pair.read.reserve0(), parseEther("1000") - expectedA);
     assert.equal(await pair.read.reserve1(), parseEther("2000") - expectedB);
